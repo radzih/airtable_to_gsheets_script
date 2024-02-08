@@ -1,10 +1,10 @@
 import logging
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 
 AIRTABLE_API_KEY = ""
 AIRTABLE_BASE_ID = ""
@@ -27,6 +27,7 @@ class Table:
 
 def configure_logging(debug: bool = False):
     level = logging.DEBUG if debug else logging.INFO
+    logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.WARNING)
     logging.basicConfig(level=level, format="%(levelname)-8s %(asctime)s: %(message)s")
 
 
@@ -50,35 +51,39 @@ def copy_airtable_tables(base_id: str) -> list[Table]:
         )
         tables.append(table)
 
-    for i, table in enumerate(tables):
-        offset = None
-
-        records = []
-
-        while True:
-            url = f"https://api.airtable.com/v0/{base_id}/{table.airtable_id}"
-            response = httpx.get(url, headers=headers, params={"offset": offset})
-
-            if response.is_error:
-                logging.error(f"Failed to fetch table {table.name}: {response.text}")
-                exit(1)
-
-            response_data = response.json()
-
-            for record in response_data["records"]:
-                records.append(
-                    Record(
-                        values=[record["fields"].get(column) for column in table.columns]
-                    )
-                )
-
-            offset = response_data.get("offset")
-            if not offset:
-                break
-
-        table.records = records
+    with ThreadPoolExecutor() as executor:
+        executor.map(copy_records_to_table, tables)
 
     return tables
+
+
+def copy_records_to_table(table: Table):
+    headers = {"Authorization": f"Bearer {AIRTABLE_API_KEY}"}
+    offset = None
+    records = []
+
+    while True:
+        url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{table.airtable_id}"
+        response = httpx.get(url, headers=headers, params={"offset": offset})
+
+        if response.is_error:
+            logging.error(f"Failed to fetch table {table.name}: {response.text}")
+            exit(1)
+
+        response_data = response.json()
+
+        for record in response_data["records"]:
+            records.append(
+                Record(
+                    values=[record["fields"].get(column) for column in table.columns]
+                )
+            )
+
+        offset = response_data.get("offset")
+        if not offset:
+            break
+
+    table.records = records
 
 
 def create_google_spreadsheet(tables: list[Table]) -> str:
@@ -112,6 +117,8 @@ def create_google_spreadsheet(tables: list[Table]) -> str:
 
 
 def fill_gsheet_table(table: Table, spreadsheet_id: str):
+    logging.info(f"Filling table {table.name}")
+
     credentials = Credentials.from_service_account_info(
         GSHEET_SERVICE_ACCOUNT_CREDENTIALS,
         scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -150,6 +157,11 @@ def fill_gsheet_table(table: Table, spreadsheet_id: str):
     query.execute()
 
 
+def fill_gsheet_tables(tables: list[Table], spreadsheet_id: str):
+    with ThreadPoolExecutor() as executor:
+        executor.map(lambda table: fill_gsheet_table(table, spreadsheet_id), tables)
+
+
 def main():
     configure_logging()
     logging.info("Starting the application")
@@ -161,13 +173,7 @@ def main():
     spreadsheet_id = create_google_spreadsheet(tables)
     logging.info(f"Spreadsheet created with ID {spreadsheet_id}")
 
-    for table in tables:
-        logging.info(f"Creating a new table {table.name}")
-        try:
-            fill_gsheet_table(table, spreadsheet_id)
-        except HttpError as e:
-            logging.error(f"Failed to create table {table.name}: {e}")
-            continue
+    fill_gsheet_tables(tables, spreadsheet_id)
 
     logging.info("All tables have been created")
 
