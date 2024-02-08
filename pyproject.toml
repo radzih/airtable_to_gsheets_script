@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "airtable-to-gsheets-script"
+version = "0.1.0"
+description = ""
+authors = ["Vadim Radzih <iphonevadim2003@gmail.com>"]
+readme = "README.md"
+packages = [{include = "airtable_to_gsheets_script"}]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+httpx = "^0.26.0"
+google-api-python-client = "^2.116.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
